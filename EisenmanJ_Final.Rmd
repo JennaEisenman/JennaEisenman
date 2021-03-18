@@ -1,0 +1,341 @@
+---
+title: "Final Project: Determining Track Popularity on Spotify"
+author: "Jenna Eisenman"
+date: "November 23, 2020"
+output: 
+  html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+options(scipen=999)
+setwd("C:\\Users\\owner\\Desktop\\GSE S524")
+library(tidyverse)
+library(sqldf)
+library(leaps)
+library(glmnet)
+library(randomForest)
+```
+# Sections {.tabset .tabset-pills}
+
+```{r}
+data = read_csv("spotify.csv"); spotify = sqldf("select * from data where year >= 2016"); rm(data)
+spotify = spotify[,-c(2,4,7,13,15,19)]
+```
+
+## Introduction
+
+Spotify is a Swedish-based audio and media streaming service, with over 60 million tracks in its repository. Artists receive royalities for track streams rather than payments for physical albums and tracks sold, which sets the stage for massive amounts of streaming data. Developers at Spotify determined values for various indices that can help characterize a track based on its general mood and tone. In this project, I will use Multiple Regression with Best Subsets, Lasso, and Decision Tree methods to attempt to predict a track's popularity based on the various characteristics from Spotify's web API.
+
+### The Data
+160,000+ tracks and their characteristic features were put together in a simple dataset that can be found [here](https://www.kaggle.com/yamaerenay/spotify-dataset-19212020-160k-tracks)
+
+Audio features of tracks from Spotify can be found [here](https://developer.spotify.com/documentation/web-api/reference/tracks/get-audio-features/)   
+Track features from Spotify can be found [here](https://developer.spotify.com/documentation/web-api/reference/tracks/get-track/)    
+
+Below is a list of all the variables in the dataset along with a short description. Variables in **bold** will be used in modeling.  
+
+Variable | Description
+------------- | -------------
+**acousticness** | Confidence measure from 0.0 (not acoustic) and 1.0 (high confidence that the track is acoustic).
+artists | Artists that performed the track.
+**danceability** | Describes how suitable a song is for dancing from 0.0 (least danceable) to 1.0 (most danceable)
+duration_ms | Track length in milliseconds.
+**energy** | Perceptual measure of intensity and activity from 0.0 (least energetic) to 1.0 (most energetic)
+**explicit** | 1 = track contains explicit lyrics, 0 = track does not contain explicit lyrics
+id | Spotify ID for the track.
+**instrumentalness** | Predicts whether a track contains vocals (0.0) or no vocals (1.0). Values above 0.5 are considered instrumental.
+**key**  | Estimated overall key from 0 to 11 mapped from [Pitch Class Notation](https://en.wikipedia.org/wiki/Pitch_class#Integer_notation)
+**liveness** | Detects the presence of a live audience in recording; values above 0.8 provides strong likelihood that the track is live.
+**loudness** | Overall loudness of track in decibels (dB)--values are typically between -60 and 0 dB.
+**mode** | Modality (major [1] or minor [0]) of a track.
+name | Name of the track.
+**popularity** | Popularity of the track from 0-100, based on the total number of plays and how recent the plays are.
+release_date | Date the track was released.
+**speechiness**| Detects the presence of spoken word in a track. Values < 0.33 represent music and other non-speech tracks, values > 0.33 and < 0.66 represent tracks that may contain both music and speech, and values > 0.66 represent tracks probably made entirely of spoken word.
+**tempo** | Overall estimated tempo in BPM (speed or pace)
+**valence** | Measure from 0.0 (least positive) to 1.0 (most positive) describing the music positiveness conveyed by a track (happiness, cheerfulness, euphoria).
+year | Year released. For simplicity, all tracks used were released between **2016-2020**      
+
+
+### Exploratory Analysis
+
+The first variable to analyze is **popularity**, with a **mean of `r mean(spotify$popularity)`**, **standard deviation of `r sd(spotify$popularity)`**, minimum of 0 and maximum of 100. Popularity is our dependent variable (what we hope to predict), and has a slightly left skew as seen in the histogram below. In this histogram, as with the others in this section, the *red line is an indicator of the mean*. 
+ 
+```{r p1}
+ggplot(spotify) + geom_histogram(aes(popularity)) + labs(x="Popularity", y="Frequency") + geom_vline(xintercept = mean(spotify$popularity), col="red") + theme(panel.background =element_blank())
+```
+       
+Next, we will look at **acousticness**, with a **mean of `r mean(spotify$acousticness)`**, **standard deviation of `r sd(spotify$acousticness)`**, minimum of 0 and maximum of 1. We can see in the histogram below that most songs have an acousticness of less than 0.5, which means that most of these tracks in this sample are not acoustic songs. 
+
+```{r p2}
+ggplot(spotify) + geom_histogram(aes(acousticness)) + labs(x="Acousticness", y="Frequency") + geom_vline(xintercept = mean(spotify$acousticness), col="red") + theme(panel.background =element_blank())
+```
+      
+Next, we will look at **danceability**, with a **mean of `r mean(spotify$danceability)`**, **standard deviation of `r sd(spotify$danceability)`**, minimum of 0 and maximum of 1. The closer to 1, the more danceable, so this distribution indicates more upbeat tracks in our data set.
+
+```{r p3}
+ggplot(spotify) + geom_histogram(aes(danceability)) + labs(x="Danceability", y="Frequency") + geom_vline(xintercept = mean(spotify$danceability), col="red") + theme(panel.background =element_blank())
+```
+      
+Next, we will look at **energy**, with a **mean of `r mean(spotify$energy)`**, **standard deviation of `r sd(spotify$energy)`**, minimum of 0 and maximum of 1. Similar to danceability, a large volume of observations in the dataset are closer to 1 (higher energy). The small tail towards 0 probably represents a few podcast episodes or spoken-word jokes and monologues, which have little energy.
+
+```{r p4}
+ggplot(spotify) + geom_histogram(aes(energy)) + labs(x="Energy", y="Frequency") + geom_vline(xintercept = mean(spotify$energy), col="red") + theme(panel.background =element_blank())
+```
+        
+Below is a frequency table for explicit/not explicit. We can see that there are more observations without explicit lyrics than with them, but the difference is only `r nrow(spotify)-2*sum(spotify$explicit)` observations. Many big pop songs today also have explicit versions and non-explicit versions, so it would be interesting to see how explicit lyrics  impact a track's popularity.
+
+explicit | not explicit
+---------|-------------
+`r sum(spotify$explicit)` | `r nrow(spotify)-sum(spotify$explicit)`
+           
+Next, we will look at **instrumentalness**, with a **mean of `r mean(spotify$instrumentalness)`**, **standard deviation of `r sd(spotify$instrumentalness)`**, minimum of 0 and maximum of 1. An overwhelming number of tracks are close to 0, meaning that most of the tracks here have lyrics to them. Only about `r sum(spotify$instrumentalness>0.75)` tracks are greater than 0.75, so very few are instrumental only in nature. 
+
+```{r pa}
+ggplot(spotify) + geom_histogram(aes(instrumentalness)) + labs(x="Instrumentalness", y="Frequency") + geom_vline(xintercept = mean(spotify$instrumentalness), col="red") + theme(panel.background =element_blank())  
+```
+      
+Now, we will look at **key**, with a **mean of `r mean(spotify$key)`**, **standard deviation of `r sd(spotify$key)`**, minimum of 1 and maximum of 11. The distribution of key is somewhat uniform, with a mean very close to the the median of 5. 
+
+```{r p5}
+ggplot(spotify) + geom_histogram(aes(key)) + labs(x="Key", y="Frequency") + geom_vline(xintercept = mean(spotify$key), col="red") + theme(panel.background =element_blank()) + scale_x_continuous(breaks=seq(0,11,1))
+```
+     
+Next, we will look at **liveness**, with a **mean of `r mean(spotify$liveness)`**, **standard deviation of `r sd(spotify$liveness)`**, minimum of 1 and maximum of 1. The distribution is heavily skewed to the right, with only `r sum(spotify$liveness>0.8)` tracks are greater than 0.8, indicating that they are live.
+
+```{r p6}
+ggplot(spotify) + geom_histogram(aes(liveness)) + labs(x="Liveness", y="Frequency") + geom_vline(xintercept = mean(spotify$liveness), col="red") + theme(panel.background =element_blank())
+```
+  
+Next, we will look at **loudness**, with a **mean of `r mean(spotify$loudness)`**, **standard deviation of `r sd(spotify$loudness)`**, minimum of about -60 and a max of 0. Most songs are on the louder side, with heavy left skewness. This is also explained by the fact that most of the tracks in the data set are vocal and not instrumental, also that there is less spoken word tracks. 
+
+```{r}
+ggplot(spotify) + geom_histogram(aes(loudness)) + labs(x="Loudness", y="Frequency") + geom_vline(xintercept = mean(spotify$loudness), col="red") + theme(panel.background =element_blank())
+```
+        
+Below is a frequency table and average popularity level for mode, where mode = 1 indicates major key and mode = 0 indicates a minor key. Much more of the tracks are major rather than minor, (`r sqldf("select avg(popularity) from spotify group by mode having mode=1")`) however there is a pretty even split of popularity between both categories. But, those that are in a major key are on average more popular than songs in a minor key.
+
+major | minor
+---------|-------------
+`r sum(spotify$mode)` | `r nrow(spotify)-sum(spotify$mode)`
+`r sqldf("select avg(popularity) from spotify group by mode having mode=1")`|`r sqldf("select avg(popularity) from spotify group by mode having mode=0")`
+        
+Next, we will look at **speechiness**, with a **mean of `r mean(spotify$speechiness)`**, **standard deviation of `r sd(spotify$speechiness)`**, minimum of about -60 and a max of 0. Most songs are on the louder side, with heavy left skewness. This is also explained by the fact that most of the tracks in the data set are vocal and not instrumental, also that there is less spoken word tracks. 
+
+```{r}
+ggplot(spotify) + geom_histogram(aes(speechiness)) + labs(x="Speechiness", y="Frequency") + geom_vline(xintercept = mean(spotify$speechiness), col="red") + theme(panel.background =element_blank())
+```
+        
+Now, we will look at **tempo**, with a **mean of `r mean(spotify$tempo)`**, **standard deviation of `r sd(spotify$tempo)`**, minimum of 0, and max of **`r max(spotify$tempo)`**. There is a relatively even split below and above the mean, according to the histogram. 
+
+```{r}
+ggplot(spotify) + geom_histogram(aes(tempo)) + labs(x="Tempo", y="Frequency") + geom_vline(xintercept = mean(spotify$tempo), col="red") + theme(panel.background =element_blank())
+```
+      
+Finally, we will look at **valence**, with a **mean of `r mean(spotify$valence)`**, **standard deviation of `r sd(spotify$valence)`**, minimum of about 0 and a max of 1. Similar to tempo, there is a pretty even split below the mean and above it. 
+
+```{r}
+ggplot(spotify) + geom_histogram(aes(valence)) + labs(x="Valence", y="Frequency") + geom_vline(xintercept = mean(spotify$valence), col="red") + theme(panel.background =element_blank())
+```
+
+## Models
+
+### Multiple Regression with Best Subsets Selection
+
+For our first model, we will be conducting a Linear Regression model on our data. To decide which variables to keep in the model, we need to see how statistically significant they are in terms of the model. A way to determine variable significance in a model is to do Best Subsets Selection, where a model with every combination of variables is run and the model with the highest RSS (R^2^) or lowest Cp or AIC/BIC is chosen.
+
+
+```{r bs}
+regfit.full = regsubsets(popularity~., spotify, nvmax=12)
+reg.summary = summary(regfit.full)
+wmax = which.max(reg.summary$adjr2)
+wmin = which.min(reg.summary$cp)
+ggplot() + geom_line(aes(x=c(1:12), y=reg.summary$adjr2)) + labs(x="Number of Variables", y="Adjusted R-Squared") + geom_point(aes(x=wmax, y=reg.summary$adjr2[wmax]), col="red") + scale_x_continuous(breaks=seq(0,12, 2)) + theme(panel.background =element_blank())
+ggplot() + geom_line(aes(x=c(1:12), y=reg.summary$cp)) + labs(x="Number of Variables", y="Cp") + geom_point(aes(x=wmin, y=reg.summary$cp[wmin]), col="red") + scale_x_continuous(breaks=seq(0,12, 2)) + theme(panel.background =element_blank())
+wmin = which.min(reg.summary$bic)
+ggplot() + geom_line(aes(x=c(1:12), y=reg.summary$rss)) + labs(x="Number of Variables", y="RSS") + scale_x_continuous(breaks=seq(0,12, 2)) + theme(panel.background =element_blank())
+ggplot() + geom_line(aes(x=c(1:12), y=reg.summary$bic)) + labs(x="Number of Variables", y="BIC") + geom_point(aes(x=wmin, y=reg.summary$bic[wmin]), col="red") + scale_x_continuous(breaks=seq(0,12, 2)) + theme(panel.background =element_blank())
+```
+
+Based on Adjusted R^2^, we see that the 8 variable model is best. Based on Mallow's Cp, it is the 7 variable model. BIC says that the 3 variable model is best. Because the Adjusted R^2^ for the 7 variable model is comparable to the 8 variable model, I would consider the 7 variable model to be the best so far. To confirm our intuition, we will use the validation set approach to select the best model.
+
+The 7 variable model contains these variables: `danceability`, `energy`, `explicit`, `instrumentalness`, `loudness`, `mode`, and `speechiness`.
+
+To confirm with the validation set approach, we will do best subsets selection on a random sample of the data, and then compare Mean Square Error between the various models on the test set.
+```{r cv}
+set.seed(1)
+n = 9725
+s =9725*.8
+mysample <- sample(1:n, s, replace=F)
+train = spotify[mysample,]
+test = spotify[-mysample,]
+regfit.best = regsubsets(popularity~., data=train, nvmax=12)
+test.mat = model.matrix(popularity~., data=test)
+
+val.errors = rep(NA, 12)
+for(i in 1:12){
+  coefi = coef(regfit.best, id=i)
+  pred=test.mat[,names(coefi)]%*%coefi
+  val.errors[i]=mean((test$popularity-pred)^2)
+}
+wmin = which.min(val.errors)
+ggplot() + geom_line(aes(x=c(1:12), y=val.errors)) + labs(x="Number of Variables", y="MSE") + geom_point(aes(x=wmin, y=val.errors[wmin]), col="red") + scale_x_continuous(breaks=seq(0,12, 2))
+```
+      
+Surprisingly, the validation set approach appears to choose the 4-variable model (MSE of `r val.errors[wmin]`) as the best model. The variability in selection may be caused by the influence of genre--tracks can be popular across all sorts of styles of music. However, the huge influence of pop music in the US may help explain why variables like loudness, danceability, and energy are more significant.
+     
+We will proceed with the 4-variable model. Let's dive deeper into the model and visualize its efficacy. The selected variables are `danceability`, `energy`, `explicit`, and `speechiness`.
+
+```{r lin}
+model1 = lm(popularity~danceability + energy + explicit + speechiness, data=spotify);summary(model1)
+```     
+
+This model, using the full data set, shows all 4 independent variables as statistically significant. This means that on average, holding all other variables constant, each variable has an effect on the popularity of the track.
+
+```{r g1}
+ggplot(spotify) + geom_density(aes(popularity), col="green") +  labs(x="Popularity", y="Frequency", title="Popularity vs. Fitted Values", subtitle = "Observed values in green, fitted values in orange") + geom_density(aes(model1$fitted.values), col="orange") + theme(panel.background =element_blank()) 
+```
+
+Here we have a comparison of the observed popularity vs. the fitted. The large spike around the mean (`r mean(model1$fitted.values)`) indicates that the model doesn't capture a ton of the variability in the observed data. Considering our R^2^ value is only approximately 2%, we can see how the density estimate would be flawed. 
+
+To test the model, let's predict the popularity of a new pop song. I used Spotify's Web API to collect data on one of the biggest songs of 2020, "Say So" by Doja Cat. Below are the audio/track features of the song.
+
+Variable | Value
+------------- | -------------
+**acousticness** | 0.256
+artists | Doja Cat
+**danceability** | 0.787
+**energy** | 0.673
+**explicit** | 1
+id | 3Dv1eDb0MEgF93GpLXlucZ
+**instrumentalness** | 0.00000357
+**key**  | 11
+**liveness** | 0.0904
+**loudness** | -4.577
+**mode** | 0
+name | "Say So"
+**popularity** | 85
+**speechiness**| 0.158
+**tempo** | 110.962
+**valence** | 0.786
+year | 2019
+
+```{r}
+pred = predict(model1, data.frame(danceability = 0.787,
+                           energy = 0.673,
+                           explicit = 1,
+                           speechiness = 0.158))
+perc_error = (85-pred)/85*100;perc_error
+```
+   
+Running the track's features through the regression gives us a popularity estimate of `r pred` and a percent error of `r perc_error`%. There could be many reasons for the underestimation of popularity, including omitted variable bias (for something like genre) or nonlinear data.    
+
+### Regularization with Ridge Regression and the Lasso
+
+To hopefully improve the model, I wanted to move towards Regularization. These models provide a penalty for its weights, and can help reduce model complexity and multicollinearity, if it exists. Two of the most popular methods are Ridge Regression and Lasso. These methods are very similar, however Lasso can eliminate variables whereas Ridge Regression uses all variables in the model. This is the case because both models use a penalty constraint $\lambda$ that, when $\lambda$ = 0, the model is simply a linear regression model. Lasso allows the coefficients for certain variables to =0 (no effect), where Ridge Regression does not allow the coefficients to =0. 
+
+
+```{r lasso}
+#create matrix of x values and y vector
+x = model.matrix(popularity~., spotify)[,-1]
+y=spotify$popularity
+grid = 10^seq(10,-2,length=100)
+ridge_mod = glmnet(x,y,alpha=0, lambda=grid)
+lasso_mod = glmnet(x,y,alpha=1, lambda=grid)
+#create test and train sets
+set.seed(1)
+train=sample(1:nrow(x), nrow(x)*.8)
+test=(-train)
+y.test = y[test]
+#use cross-validation to choose the proper value for lambda
+#ridge regression
+cv.outr=cv.glmnet(x[train,],y[train],alpha=0)
+bestlamr=cv.outr$lambda.min
+ridge.pred = predict(ridge_mod, s=bestlamr, newx=x[test,])
+mean((ridge.pred-y.test)^2)
+#lasso
+cv.outl=cv.glmnet(x[train,],y[train],alpha=1)
+bestlaml=cv.outl$lambda.min
+lasso.pred = predict(lasso_mod, s=bestlaml, newx=x[test,])
+mean((lasso.pred-y.test)^2)
+```
+
+The MSE for Ridge Regression is `r mean((ridge.pred-y.test)^2)`, and the MSE for Lasso is `r mean((lasso.pred-y.test)^2)`, meaning that the Ridge is just slightly the better model. However, their MSEs are very close, which makes them comparable to each other. Next, we will estimate the Ridge Regression model with the full data set using the optimal value for $\lambda$, `r bestlamr`. 
+
+```{r ridge}
+out = glmnet(x,y, alpha=0)
+predict(out, type="coefficients", s=bestlamr)
+```
+Ridge Regression does not subset the model, so all variables are included in the model. Since our value for $\lambda$ was so small (`r bestlamr`), the coefficients are actually on the larger side. Since many of these coefficients are very close to zero (tempo, for example), it may be the case that a regression-based model may not be the best for explaining variability in our data. Finally, let's revisit "Say So" to see how the model predicts popularity in comparison to the linear model in the previous section.
+
+```{r rpred}
+pred_matrix = matrix(c(0.256,0.787, 0.673,1,0.00000357,11,0.0904,-4.577,0,0.158,0.962,0.786), nrow=1, dimnames=list(NULL, c("acousticness","danceability","energy","explicit","instrumentalness","key","liveness","loudness","mode","speechiness","tempo","valence")))
+
+r_pred = predict(out, type="response", pred_matrix, s=bestlamr)
+perc_errorr = (85-r_pred)/85*100;perc_error
+```
+
+The Ridge Regression model predicts a popularity of `r r_pred`, with a `r perc_errorr`% error. Overall, this model is only slightly better than the Linear Regression model from the previous section. To try and improve fit, we will move towards decision trees and Random Forests. 
+
+### Decision Tree Methods with Random Forest and Bagging
+
+If regression-based methods are not sufficient to model track popularity, we may try decision tree methods. Tree methods are very easily interpreted and they closely mirror human decision-making, which may help model human choices in listening to certain tracks. Specifically, we will use a Random Forest to utilize the significance of certain variables, like speechiness and energy. We will also use Bagging (bootstrap aggregation), which helps reduce variance and helps avoid overfitting. Bagging also means that our Random Forest will include all variables in the model. We will also try a model with the default p/3 variables (4 variables) to see which model performs best.
+
+```{r bag}
+set.seed(1)
+train = sample(1:nrow(spotify), nrow(spotify)/2)
+spot.test = spotify[-train, "popularity"]
+#bagging
+bag.spot = randomForest(popularity~., data=spotify, subset=train, mtry=12, importance=TRUE); bag.spot
+yhat.bag = predict(bag.spot, newdata=spotify[-train,])
+plot(yhat.bag, spot.test); abline(0,1)
+bMSE=mean((yhat.bag-spot.test)^2);bMSE
+ggplot() + geom_point(aes(x=spot.test, y=yhat.bag)) + geom_abline(aes(slope=1, intercept = 0)) + labs(x="Popularity", y="Predicted Popularity", title="Bagging Fitted Values") + theme(panel.background=element_blank())
+```
+The MSE for this Bagged model is `r bMSE`, which is an improvement upon the Linear model with Best Subsets and our Ridge model. We can see in the visualization of the fitted values that there is not much of a linear relationship, and that there is a lot of variance in the distribution of those values. It has been somewhat tough for all of the models used to capture the values of popularity that are close to the minimum.
+```{r rf}
+#rf
+rf.spot = randomForest(popularity~., data=spotify, subset=train, mtry=4, importance=TRUE); rf.spot
+yhat.rf = predict(rf.spot, newdata=spotify[-train,])
+ggplot() + geom_point(aes(x=spot.test, y=yhat.rf)) + geom_abline(aes(slope=1, intercept = 0)) + labs(x="Popularity", y="Predicted Popularity", title="Random Forest Fitted Values") + theme(panel.background=element_blank())
+rfMSE=mean((yhat.rf-spot.test)^2);rfMSE
+```
+The test MSE value for the Random Forest is `r rfMSE` which is the lowest MSE yet, indicating that Random Forests are an improvement over Bagging in this context. 
+
+```{r g}
+ggplot() + geom_density(aes(spot.test), col="green") +  labs(x="Popularity", y="Frequency", title="Popularity vs. Fitted Values: Random Forest", subtitle = "Observed values in green, fitted values in orange") + geom_density(aes(yhat.rf), col="orange") + theme(panel.background =element_blank()) 
+```
+We see in this density plot that the Random Forest does do slightly better than our linear model in capturing the range of popularity in tracks, but there is still a struggle in predicting the popularity values close to 0. Let's conclude the Random Forest analysis with seeing which variables are of the most importance, and a final look at predicting popularity with the track "Say So."
+```{r}
+importance(rf.spot)
+varImpPlot(rf.spot, main="Variable Importance")
+```
+In terms of importance, it appears that tempo, acousticness, and speechiness are the most important. Energy, loudness, danceability, valence, and loudness are also high up in importance. This helps explain that Pop songs with high energy seem to get the most plays on Spotify. 
+
+```{r rfpred}
+rf.full = randomForest(popularity~., data=spotify, mtry=4, importance=TRUE); 
+predrf = predict(rf.full, pred_matrix, type="response")
+perc_errorrf = (85-predrf)/85*100;perc_errorrf
+```
+The Random Forest model predicts a popularity of `r predrf` for the track "Say So," with a `r perc_errorrf`% error, which is the best closest prediction out of all models. This may be because rather than assuming data is linear, like the Regression-based methods, tree models mock human behavior which can help explain why humans choose to listen to certain tracks over others. 
+
+## Conclusion
+
+In this project, we used many methods to try and explain why certain tracks on Spotify have high popularity and others do not. We tried Linear Regression with Best Subsets, Lasso and Ridge Regression, and Random Forests and Bagging to see which would perform the best. Below is a table of each model and its Mean Square Error (MSE), along with the popularity prediction for the track "Say So."
+
+Model | MSE | Prediction
+------| ----- | -------
+LRM with Best Subsets | `r val.errors[wmin]` | `r pred`
+Ridge Regression | `r mean((ridge.pred-y.test)^2)`| `r r_pred`
+Lasso | `r mean((lasso.pred-y.test)^2)`
+Bagging | `r bMSE`
+Random Forest | `r rfMSE`| `r predrf`
+    
+In terms of both MSE and prediction efficacy, the Random Forest model performed the best. Random Forests also work well when variables are potentially correlated, which is the case for variables like energy and loudness (correlation of `r cor(spotify$loudness, spotify$energy)`). As we have mentioned before, tree-based methods like Random Forests model human behavior, rather than relying on linearity, which most data is not. 
+
+To improve on the models in this project, I would also include genre in the models (or an aggregated few genres) and the number of followers an artist has to help the model make its predictions of track popularity. In this context, the main issue with determining popularity based on these track features is that a song can be energetic, loud, valent, and popular, but an unpopular track can also be all of those things. I believe more categorical variables would help improve those discrepancies.
