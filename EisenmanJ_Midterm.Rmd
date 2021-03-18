@@ -1,0 +1,128 @@
+---
+title: "Midterm Project: *The State of COVID-19 in the World*"
+author: "Jenna Eisenman"
+date: "November 1, 2020"
+output: 
+  html_document:
+    toc: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+library(readxl)
+library(sqldf)
+library(tidyverse)
+library(gganimate)
+library(leaflet)
+library(png)
+library(gifski)
+library(transformr)
+library(lubridate)
+```
+
+#Introduction
+***
+[*Our World in Data*](https://ourworldindata.org/) is about "research and data to make progress against the world's largest problems." Similar to Gapminder, *Our World in Data* provides free, open-source data about demographics, health metrics and indices, as well as global issues. In 2020, *OWID* turned its focus to reporting data about the spread of the Coronavirus pandemic. Their Coronavirus source data is updated daily and relies on worldwide reporting from the European CDC. Not only does the source data  have information regarding testing, new cases, and deaths, but also multiple indices that can help explain the variability in case count: life expectancy, stringency in reagrds to restrictions, share of population that smokes or has diabetes, cardiovascular deaths, share of extreme poverty, and more. More information about the data can be found in the *OWID* [Github repository](https://github.com/owid/covid-19-data/tree/master/public/data). 
+
+```{r load_data, message=FALSE, warning=FALSE, include=FALSE}
+covid = read_excel("C:\\Users\\owner\\Desktop\\GSE S524\\covid.xlsx")
+covid$date = as.Date(covid$date)
+```
+In this report, I will be discussing how these certain indices relate to the overall health and wellness of the world and how a lack of overall wellness could have an impact on new infections.
+
+To begin exploring the data, I wanted to compare the rise in new cases across continents. 
+
+```{r cases_over_time, echo=FALSE, message=FALSE, warning=FALSE,fig.cap="Figure 1: New Cases Over Time by Continent"}
+wwcases = sqldf("select sum(new_cases_smoothed) as cases, continent, date from covid where continent is not null group by date,continent")
+
+#gganimate plot
+nc = ggplot(wwcases) + geom_line(aes(x=date,y=cases, group=continent, col=continent),lwd=1.5) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), legend.position = "top") + scale_y_continuous(breaks=seq(0, 150000, by=50000), labels=paste(seq(0, 150,by=50),"K", sep=''))  + labs(y="New Cases", x='',col="") + transition_reveal(date)
+animate(nc, end_pause = 30)
+```
+    
+Although the trend is overwhelmingly upward, it is interesting to note the differences in virus "waves." Europe, North America, and Asia all appeared to have a first wave of cases in the latter end of Marh into April. Oceania also saw a small "peak" of cases around that time, however they have kept cases relatively low overall. A similar second wave appears around July, with North America, South America, and Africa all seeing relative maximums in that timeframe. In the following sections I will be taking a deeper dive into Africa, Asia, Europe, and the Americas' handling of the pandemic.
+
+#Analysis
+***
+
+To begin the analysis, we will start with a cross-sectional global model. I wanted to start globally to see if there were any variables in common that could help explain the overall variability in cases. This model included the natural log of **new cases smoothed** (sum of new cases over time), **stringency index**, **human development index**, and the natural log of **population**. The stringency index is a composite measure of multiple response indicators like school closures, workplace closures, and travel bans where 100 is the strictest, and 0 is the most flexible. The human development index is an average achievement index of human development indluding a long and happy life and a decent standard of living.
+
+The calculated $R^2$ is 0.2349197, meaning that is the proportion of variability that can be explained by the model. This may seem low, but considering the vast number of reasons that lead to an increase in cases, and the statistical significance of the variables included in the model (Pr(>|t|) > 0.05), this can be considered a relatively decent fit. 
+
+##Global Model{.tabset}
+###Model Details
+```{r stringency, echo=FALSE, message=FALSE, warning=FALSE}
+cross_func = sqldf("select continent, location, sum(new_cases_smoothed) as cases, avg(stringency_index) as stringency_index, population, extreme_poverty, diabetes_prevalence, cardiovasc_death_rate, female_smokers+male_smokers as smokers, life_expectancy, human_development_index from covid group by location having avg(stringency_index) is not null and human_development_index is not null and cases is not null")
+
+#data looks better with log cases
+model1 = lm(log(cases) ~ stringency_index + log(population) + human_development_index, data=cross_func);summary(model1)
+model1pred = exp(model1$fitted.values + sigma(model1)^2/2)
+R2 = cor(cross_func$cases,model1pred)^2;
+```
+
+###Plot
+This animated plot of natural log of cases vs. stringency index is to demonstrate the differences in fit across different continents. It is interesting to note how the various continents behaved in the wake of a pandemic. In Africa, the stringency index was more varied, leaning towards more strict, and their case count is in the middle towards the lower-end. Asia has overall high stringency and high case counts, but that may be because the pandemic was originated in Southeast Asia, and also due to the large populations in cities living in close quarters like apartment buildings. In Europe, the stringency index is relatively low, and their cases are high. Europe had a unique first wave which led to strict lockdowns in *most* countries, but relaxing those restrictions in the summertime has led to a rise in more cases. North America is perhaps the most varied continent in the visualization. There are some countries, like Cuba, that are more strict but have few cases, but also places like the United States, where we are relatively strict but have a massive amount of cases. This shines a light on the fact that various other factors contribute to cases other than the strictness of restrictions, like mask mandates and social distancing practices. Oceania was able to keep restrictions relatively low but also maintain a low case count, perhaps due to [sucessful leadership](https://www.dlprog.org/opinions/pacific-islands-leadership-responses-and-lessons-from-the-covid-19-pandemic) and swift, decisive action. Lastly, South America sees high restrictions and also high cases, which may be accounting for a lack of measures such as mask-wearing or a large [inequality gap](https://www.newscientist.com/article/mg24632863-300-how-south-america-became-the-new-centre-of-the-coronavirus-pandemic/) between the nations' richest and poorest.
+
+```{r global_plot, echo=FALSE, fig.cap="Figure 2: Natural Log of Cases by Stringency Index with Fitted Values, by Continent",message=FALSE, warning=FALSE}
+cross_func$y_hat = model1$fitted.values
+cf = ggplot(cross_func) + geom_point(aes(x=stringency_index, y=log(cases), col=continent)) + geom_point(aes(x=stringency_index, y= y_hat)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(),legend.position = "top") + labs(col="", y="Natural Log of Cases", x="Stringency Index") + transition_states(continent,transition_length = 2, state_length = 3)
+animate(cf)
+```
+   
+   
+## Africa
+```{r africa, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Figure 3: Natural Log of Cases Across Various Predictors"}
+africa = sqldf("select location, sum(new_cases_smoothed) as cases, sum(new_deaths_smoothed) as deaths, avg(stringency_index) as stringency_index, population, aged_70_older, extreme_poverty, cardiovasc_death_rate, diabetes_prevalence, female_smokers+male_smokers as smokers, life_expectancy, human_development_index from covid where continent='Africa' group by location having avg(stringency_index) is not null")
+a=ggplot(africa) + geom_point(aes(x=human_development_index, y=log(cases))) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(),legend.position = "top") + labs(col="", y="Natural Log of Cases", x="Human Development Index")
+b=ggplot(africa) + geom_point(aes(x=stringency_index, y=log(cases))) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(),legend.position = "top") + labs(col="", y="", x="Stringency Index")
+c=ggplot(africa) + geom_point(aes(x=extreme_poverty, y=log(cases))) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(),legend.position = "top") + labs(col="", y="", x="Extreme Poverty")
+library(gridExtra)
+grid.arrange(a,b,c,nrow=1)
+```
+     
+Africa's COVID-19 response has been [praised](https://apnews.com/article/virus-outbreak-ghana-africa-pandemics-donald-trump-0a31db50d816a463a6a29bf86463aaa9) across the world for maintaining low numbers of cases. Haunted by the previous HIV outbreak that killed 12 million Africans, leaders of African countries pulled all their resources together to keep the continent healthy. The plots above show interesting results--one would think that countries with more strict restrictions and a better human development index would have less cases, but the trend appears to be positive. This may be due to the fact that countries with more development have more testing and show more cases than countries with fewer resources in testing and contact tracing. Antibody testing has shown that more Africans have been infected than once thought, however Africa has a younger population--meaning more asymptomatic and mild cases than serious ones. In addition, stringent restrictions are not the best for protection overall; improved testing, contact tracing, and simple mask mandates and social distancing tend to be more successful than lockdowns.
+
+
+##Asia
+```{r asia, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Figure 4: Natural Log of Cases vs Natural Log of Population"}
+asia = sqldf("select location, sum(new_cases_smoothed) as cases, sum(new_deaths_smoothed) as deaths, avg(stringency_index) as stringency_index, population, aged_70_older, extreme_poverty, cardiovasc_death_rate, diabetes_prevalence, female_smokers+male_smokers as smokers, life_expectancy, human_development_index from covid where continent='Asia' group by location having avg(stringency_index) is not null and sum(new_cases_smoothed) is not null")
+ggplot(asia) + geom_point(aes(x=log(population), y=log(cases))) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(),legend.position = "top") + labs(col="", y="Natural Log of Cases", x="Natural Log of Population")
+```
+     
+After exploring the data, there appeared to be a lack of correlation between the indices and the rise in new cases. However, there is a sight positive relationship between new cases and population. In Asia, countries that tend to have a larger population also see more cases--a prime example is India. Unfortunately, in countries with extremely large populations, we tend to see inequality and a lack of resources for the poorest of them all, which may be contributing to the large number of cases. Inadequate healthcare and a lack of resources can also explain the association. Southeast Asia especially also has a large portion of their populations living in cities in crammed apartment buildings and other close quarters, making it easier for the virus to spread. However, there is a history of Southeast Asians wearing [masks in public](https://qz.com/299003/a-quick-history-of-why-asians-wear-surgical-masks-in-public/) which contributed the opposite effect--the lack of politicization around masks allowed countries like Japan to quickly suppress their outbreaks back in February and March.
+
+
+##Europe
+```{r eu, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Figure 5: Natural Log of Cases and Stringency index over Time"}
+europe = sqldf("select date,sum(new_cases_smoothed) as cases, sum(new_deaths_smoothed) as deaths, avg(stringency_index) as stringency_index, sum(population), avg(aged_70_older), avg(extreme_poverty), avg(cardiovasc_death_rate), avg(diabetes_prevalence), avg(female_smokers+male_smokers) as smokers, avg(life_expectancy), avg(human_development_index) from covid where continent='Europe' group by date having avg(stringency_index) is not null and sum(new_cases_smoothed) is not null")
+a=ggplot(europe) + geom_line(aes(x=date, y=stringency_index)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(),legend.position = "top") + labs(col="", y="Stringency Index",x="")
+b=ggplot(europe) + geom_line(aes(x=date, y=cases)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(),legend.position = "top") + labs(col="", y="New Cases",x="")
+library(gridExtra)
+grid.arrange(a,b,nrow=1)
+```
+      
+For Europe's response, I wanted to emphasize the impact of strict lockdowns on the pandemic. We see that there is a peak of cases around April, and on April 13 you see a maximum of stringency index. Many countries in Europe saw extremely strict lockdowns, such as Italy and Spain. These lockdowns showed that they were successful in the beginning of the pandemic, however [cases have skyrocketed](https://www.healthline.com/health-news/lockdown-2-0-a-second-wave-of-covid-19-hits-europe) due to loosening of restrictions and citizens of European countries returning to normal life--life without masks and enforced social distancing. The power of community spread is strong, and since some countries around the world are stricter than others, it was inevitable that community spread was going to bring the virus back to Europe. Europe is an example of how strong the virus really is and how we cannot let our guard down when we think it has been eradicated. 
+
+##North and South America
+```{r am, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Figure 4: Natural Log of Cases vs Natural Log of Population"}
+america = sqldf("select continent, location, sum(new_cases_smoothed) as cases, sum(new_deaths_smoothed) as deaths, avg(stringency_index) as stringency_index, population, aged_70_older, extreme_poverty, cardiovasc_death_rate, diabetes_prevalence, female_smokers+male_smokers as smokers, life_expectancy, human_development_index from covid where continent='North America' or continent='South America' group by location having avg(stringency_index) is not null and sum(new_cases_smoothed) is not null")
+
+ggplot(america) + geom_point(aes(y=log(cases), x=log(population), col=continent)) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(),legend.position = "top") + labs(col="", y="Natural Log of Cases",x="Natural Log of Population")
+```
+    
+Similar to what we saw in Asia, there is a very strong linear relationship between population and new cases. Two countries that have very large populations and are known for having some of the most cases in the world are the United States and Brazil. In both of these countries, there is a large wealth gap between the richest and the poorest in the population. Also, both countreis have not implemented a universal mask mandate, which allows for community transmission to happen easily. In the Americas, the stringency index was varied, with smaller countries in Central America having some of the most stringent restrictions. We have learned from countries on the East that perhaps it is not the most strit restrictions that eradiate the virus, it is simple steps like social distancing and a mask mandate. However, with much of the population being in the working class, and without federal action to slow community spread, we will see that countries with larger populations (even when very spread out) will see the most cases.
+
+
+#Conclusion
+***
+The purpose of this report was to investigate whether certain indices such as a human development index, underlying health conditions, or stringency in lockdown restrictions impact the amount of cases of COVID-19 worldwide. We noticed that swift action from Oceania allowed them to avoid the detrimental effects of a large outbreak. In Asia, where the pandemic began, their cultural norm of wearing surgical masks in public helped them curb their outbreaks. Africa, with their young population, saw fewer cases than expected for a continent of their large population. However, inequality of resources led to more cases that were not identified by medical officials. Since Africa decided to work together to reduce transmission, they have kept their case count relatively low in comparison to other continents. Europe, in the beginning, took strict action in locking down countries like Italy and Spain. However, their strict actions weren't sustainable, and they are now seeing a second wave that appears to be stronger than the first, with their citizens tired of strict lockdowns. In the Americas we saw a wide range of stringency in lockdowns, but it has proven again that simple mask mandates (not politicized) and social distancing measures can be more successful than a strict lockdown.
+
+For further analysis, I would see if these indices would perhaps work better as instruments to represent the overall healthcare system in the respective countries. This may work because these indices to not seem to be directly correlated with the rise in cases, but are perhaps correlated with the quality of healthcare and therefore the rise in cases/deaths.
+
+<a href="#top">Back to top</a>
